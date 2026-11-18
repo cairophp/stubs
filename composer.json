@@ -1,0 +1,15 @@
+{
+    "name": "cairophp/stubs",
+    "description": "Cairo's PHP API as stubs, for IDEs and static analysers. Cairo itself is the cairo binary, which has the real classes built in.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "keywords": ["cairo", "stubs", "fibers", "grpc", "app-server"],
+    "require": {
+        "php": ">=8.1"
+    },
+    "extra": {
+        "phpstan": {
+            "includes": ["phpstan.neon"]
+        }
+    }
+}

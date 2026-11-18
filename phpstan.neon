@@ -1,0 +1,5 @@
+# Lets PHPStan see Cairo's classes. Picked up by phpstan/extension-installer,
+# or add it to your phpstan.neon under "includes".
+parameters:
+    scanFiles:
+        - cairo.php
