@@ -736,6 +736,31 @@ namespace Cairo\Http {
         }
 
         /**
+         * Let Go answer repeated GET requests to the route declared just
+         * before this call, without running PHP.
+         *
+         * A response stays fresh for $ttl seconds. After that, for
+         * $staleWhileRevalidate more seconds, Go keeps serving it and rebuilds
+         * it with one request in the background. Identical requests that
+         * arrive while PHP builds a response wait for that one.
+         *
+         * The key is the route, host, path, raw query string and the $vary
+         * request headers. Only 200 responses are stored, and never one with
+         * Set-Cookie or Cache-Control private, no-store or no-cache. A request
+         * with Authorization or Cookie skips the cache unless $vary names
+         * that header.
+         *
+         * $tags name the route's responses for Cairo\Cache::purge(), which
+         * drops them when the data behind them changes.
+         *
+         * @param list<string> $vary request headers that change the response
+         * @param list<string> $tags names to purge the route's responses by
+         */
+        public function cache(float $ttl, float $staleWhileRevalidate = 0, array $vary = [], array $tags = []): static
+        {
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
@@ -1689,6 +1714,31 @@ namespace Cairo\Sql {
 
         /** @internal commit (true) or roll back */
         public function end(bool $commit): void
+        {
+        }
+    }
+}
+
+namespace Cairo {
+    final class Cache
+    {
+        /**
+         * Drop the cached responses of every route whose ->cache() names one
+         * of $tags, on all servers of this process. Call it when the data
+         * behind those routes changes:
+         *
+         *     $http->get('/products', $list)->cache(ttl: 60, tags: ['products']);
+         *     $http->post('/products', function (Request $r) use ($db): Response {
+         *         $db->exec('INSERT ...');
+         *         Cache::purge('products');
+         *         return Response::json(['ok' => true], 201);
+         *     });
+         *
+         * The next request for a purged route runs PHP again; a response PHP
+         * was already building when the purge came is not stored. A tag no
+         * route declares is ignored.
+         */
+        public static function purge(string ...$tags): void
         {
         }
     }
