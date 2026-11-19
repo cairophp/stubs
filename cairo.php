@@ -48,6 +48,66 @@ namespace Cairo {
         }
 
         /**
+         * Log a warning when one request runs the same statement $times
+         * times or more: the N+1 pattern, a query in a loop where one query
+         * with a join or IN (...) would do.
+         *
+         *     level=WARN msg="repeated query" route="GET /orders" count=50 query="SELECT * FROM items WHERE order_id = ?"
+         *
+         * It counts every statement run through PDO (any driver) and
+         * Cairo\Sql. Statements with the same shape count as one: string and
+         * number literals and IN (...) lists are replaced by ?. Parameters
+         * are never logged. Each route and statement is logged at most once
+         * a minute. 0, the default, turns the detector off.
+         */
+        public function repeatedQueries(int $times = 10): static
+        {
+        }
+
+        /** @internal */
+        public function repeatedQueriesAt(): int
+        {
+        }
+
+        /**
+         * Log every request that takes longer than $seconds, with where its
+         * time went, measured in Go with no code in the app:
+         *
+         *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
+         *
+         * Kinds: sql (PDO pgsql, Cairo\Sql), http (Cairo\Http\Client, curl),
+         * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
+         * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
+         * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can
+         * add up to more than the request. php_ms is the time when none of
+         * the request's fibers was waiting in Go: running PHP, or queued
+         * behind other requests on its thread. longest_run_ms is the longest
+         * stretch of PHP it ran without yielding, while every other request on
+         * its thread waited: move the work to offload() when it is high. 0
+         * (the default) turns it off.
+         */
+        public function slowRequests(float $seconds = 1.0): static
+        {
+        }
+
+        /**
+         * Log a warning for each route that runs PHP for longer than $seconds
+         * without yielding (a CPU loop, a big json_encode, image work), since
+         * every other request on its thread waits meanwhile:
+         *
+         *     level=WARN msg="heavy route: move its CPU work to offload()" route="POST /report" longest_run_ms=212
+         *
+         * Move that work to Cairo\offload(), which runs it on another thread.
+         * Measured in Go with no code in the app, like slowRequests(), and
+         * logged at most once a minute per route. Isolated mode, where
+         * blocking calls are expected and would count as PHP, is not
+         * reported. 0 (the default) turns it off.
+         */
+        public function heavyRoutes(float $seconds = 0.05): static
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context
@@ -116,7 +176,12 @@ namespace Cairo {
         }
 
         /** @internal */
-        public function register(mixed $handler): int
+        public function register(mixed $handler, string $route = ''): int
+        {
+        }
+
+        /** @internal the route of handler $id, as logs name it */
+        public function routeName(int $id): string
         {
         }
 
@@ -1608,10 +1673,16 @@ namespace Cairo\Sql {
          * max_idle (default max_open, or 10 with no limit), max_lifetime and
          * max_idle_time (seconds). Fewer idle than open connections means a
          * reconnect for most queries under load; max_idle_time closes the
-         * ones a quiet pool does not need. Connecting is lazy: a bad DSN shows
-         * on the first query.
+         * ones a quiet pool does not need. acquire_timeout (seconds) bounds
+         * the wait for a free connection with a Cairo\PoolTimeout; without
+         * it a query waits until its request ends. Connecting is lazy: a bad
+         * DSN shows on the first query.
          *
-         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float} $options
+         * Statements that would leave a transaction or a lock on a pooled
+         * connection (BEGIN, START TRANSACTION, SET autocommit, LOCK, XA)
+         * throw a SqlException: use transaction() instead.
+         *
+         * @param array{max_open?: int, max_idle?: int, max_lifetime?: float, max_idle_time?: float, acquire_timeout?: float} $options
          */
         public static function open(string $dsn, array $options = []): self
         {
@@ -1691,7 +1762,7 @@ namespace Cairo {
 }
 
 namespace Cairo {
-    /** Cairo\Pool had no free connection within its acquireTimeout. */
+    /** Cairo\Pool or Cairo\Sql\Db had no free connection within its acquire timeout. */
     final class PoolTimeout extends \RuntimeException
     {
     }
