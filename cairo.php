@@ -511,60 +511,6 @@ namespace Cairo {
     }
 
     /**
-     * A per-thread pool of connections (PDO, Redis clients, sockets), so each
-     * fiber gets its own connection: a connection must never be used by two
-     * fibers at once.
-     *
-     *     $db = new Pool(fn () => new PDO($dsn, $user, $pass), max: 10);
-     *     $pdo = $db->get();                        // this fiber's, until it ends
-     *     $db->with(fn (PDO $pdo) => $pdo->query('SELECT 1'));   // only for the callback
-     *
-     * Build pools in server.php: every PHP thread runs it, so every thread
-     * gets its own pool. When all connections are in use, get() suspends the
-     * fiber until one is returned.
-     */
-    final class Pool
-    {
-        public function __construct(callable $factory, private readonly int $max = 16)
-        {
-        }
-
-        /**
-         * The current fiber's connection: the same one on every call in this
-         * fiber, returned to the pool when the fiber ends (dropped if the
-         * request was cancelled; call discard() after a connection error). A
-         * child task from async() gets its own.
-         */
-        public function get(): mixed
-        {
-        }
-
-        /**
-         * Borrow a connection for $fn only, then return it. When $fn throws,
-         * or the request was cancelled meanwhile, the connection is dropped
-         * instead: it may have been cut off in the middle of a reply.
-         */
-        public function with(callable $fn): mixed
-        {
-        }
-
-        /** Give the current fiber's connection back before the fiber ends. */
-        public function put(): void
-        {
-        }
-
-        /** Drop the current fiber's connection (it broke); the pool may open a new one. */
-        public function discard(): void
-        {
-        }
-
-        /** @return array{open: int, idle: int, waiting: int, max: int} */
-        public function stats(): array
-        {
-        }
-    }
-
-    /**
      * Middleware that Go runs before a request reaches PHP. Declare it on a
      * server, in order (the first one runs first):
      *
@@ -1739,6 +1685,85 @@ namespace Cairo {
          * route declares is ignored.
          */
         public static function purge(string ...$tags): void
+        {
+        }
+    }
+}
+
+namespace Cairo {
+    /** Cairo\Pool had no free connection within its acquireTimeout. */
+    final class PoolTimeout extends \RuntimeException
+    {
+    }
+
+    /**
+     * A per-thread pool of connections (PDO, Redis clients, sockets), so each
+     * fiber gets its own connection: a connection must never be used by two
+     * fibers at once.
+     *
+     *     $db = new Pool(fn () => new PDO($dsn, $user, $pass), max: 10);
+     *     $pdo = $db->get();                        // this fiber's, until it ends
+     *     $db->with(fn (PDO $pdo) => $pdo->query('SELECT 1'));   // only for the callback
+     *
+     * Build pools in server.php: every PHP thread runs it, so every thread
+     * gets its own pool. When all connections are in use, get() suspends the
+     * fiber until one is returned. A request past its deadline is skipped
+     * when a connection comes back (a Cairo\Context\ContextException). With
+     * $acquireTimeout the wait also ends after that many seconds (a
+     * PoolTimeout) and the moment the request is cancelled; that wait goes
+     * through Go, which costs a little on a pool that is always full.
+     *
+     * A connection is reset before the next fiber gets it: by default a PDO
+     * transaction left open is rolled back; pass $reset to do more, such as
+     * `fn (PDO $pdo) => $pdo->exec('DISCARD ALL')`. A connection whose reset
+     * throws is dropped. $maxLifetime and $maxIdleTime (seconds, 0: no limit)
+     * retire connections before the server or a firewall cuts them.
+     */
+    final class Pool
+    {
+        /** @param (callable(mixed): void)|null $reset */
+        public function __construct(
+            callable $factory,
+            private readonly int $max = 16,
+            private readonly ?float $acquireTimeout = null,
+            private readonly float $maxLifetime = 0,
+            private readonly float $maxIdleTime = 0,
+            ?callable $reset = null,
+        )
+        {
+        }
+
+        /**
+         * The current fiber's connection: the same one on every call in this
+         * fiber, returned to the pool when the fiber ends (dropped if the
+         * request was cancelled; call discard() after a connection error). A
+         * child task from async() gets its own.
+         */
+        public function get(): mixed
+        {
+        }
+
+        /**
+         * Borrow a connection for $fn only, then return it. When $fn throws,
+         * or the request was cancelled meanwhile, the connection is dropped
+         * instead: it may have been cut off in the middle of a reply.
+         */
+        public function with(callable $fn): mixed
+        {
+        }
+
+        /** Give the current fiber's connection back before the fiber ends. */
+        public function put(): void
+        {
+        }
+
+        /** Drop the current fiber's connection (it broke); the pool may open a new one. */
+        public function discard(): void
+        {
+        }
+
+        /** @return array{open: int, idle: int, waiting: int, max: int} */
+        public function stats(): array
         {
         }
     }
