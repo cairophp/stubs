@@ -26,13 +26,45 @@ namespace Cairo {
          * request state in globals or singletons. Isolated requests also get
          * $_GET, $_POST, $_COOKIE, $_SERVER and $_REQUEST, and may echo their
          * output and call header() instead of returning a Response.
+         * 'classic': isolated, and each request also has a PHP request of its
+         * own, as under PHP-FPM: what a request defines (functions, classes,
+         * constants, globals, included files) is gone for the next one. For
+         * apps that are a set of scripts, such as WordPress (see
+         * Http\Server::scripts()).
          */
         public function concurrency(string $mode): static
         {
         }
 
-        /** @internal */
+        /** @internal Isolated or classic: a thread runs one request at a time. */
         public function isolated(): bool
+        {
+        }
+
+        /** @internal */
+        public function classic(): bool
+        {
+        }
+
+        /**
+         * @internal The request threads call cairo serve's entry function in
+         * place of running the server file, which made this App
+         * (core.Options.Entry): a folder or a plain script served with no
+         * declaration.
+         */
+        public function servedByEntry(): static
+        {
+        }
+
+        /**
+         * Declares this app's servers and serves them on this PHP thread,
+         * returning when the thread is told to stop. For a framework's
+         * runner, called from the file that cairo serve runs, which then
+         * never returns an App (cairophp/symfony-runtime: Symfony's front
+         * controller ends the script with exit(0) once the runner returns).
+         * A server.php that returns its App does not call it.
+         */
+        public function serve(): void
         {
         }
 
@@ -117,6 +149,30 @@ namespace Cairo {
         }
 
         /**
+         * Trace every request and gRPC call with OpenTelemetry and send the
+         * spans to a collector with OTLP over HTTP. A request that arrives
+         * with a W3C traceparent header continues that trace. PHP gets the
+         * request's span as $ctx->value('traceparent') in its handler, and
+         * as the traceparent header of an HTTP request, to pass on in its
+         * own calls or to continue with an OpenTelemetry SDK of its own;
+         * calls through Cairo\Grpc\Client carry it by themselves.
+         *
+         * What is null here comes from the standard variables of the
+         * environment: OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_ENDPOINT
+         * (http://localhost:4318 for a collector on the same machine) and
+         * OTEL_TRACES_SAMPLER. So do the exporter's headers, timeouts and
+         * certificates (OTEL_EXPORTER_OTLP_HEADERS and the like): keep
+         * tokens there, not in this file.
+         *
+         * @param ?string $service  the service's name in its traces
+         * @param ?string $endpoint the collector's address, as OTEL_EXPORTER_OTLP_ENDPOINT has it
+         * @param ?float  $sample   the share of traces that start here to record, 0 to 1
+         */
+        public function tracing(?string $service = null, ?string $endpoint = null, ?float $sample = null): static
+        {
+        }
+
+        /**
          * Backpressure: at most $n requests in flight per request thread (0,
          * the default, means no cap). Further requests wait in Go, which costs
          * a goroutine, not PHP memory, until one finishes or their context
@@ -186,6 +242,14 @@ namespace Cairo {
 
         /** @internal */
         public function register(mixed $handler, string $route = ''): int
+        {
+        }
+
+        /**
+         * @internal Only HTTP servers whose routes are all scripts(): what a
+         * request runs is the script Go names, whatever the handler ids are.
+         */
+        public function scriptsOnly(): bool
         {
         }
 
@@ -304,8 +368,8 @@ namespace Cairo {
         {
         }
 
-        /** @internal $fiber runs under $context from now on */
-        public static function bind(\Fiber $fiber, self $context): void
+        /** @internal $fiber (null: the thread's own stack) runs under $context from now on */
+        public static function bind(?\Fiber $fiber, self $context): void
         {
         }
 
@@ -613,7 +677,9 @@ namespace Cairo {
 
     /**
      * Run $fn concurrently in its own fiber, under the current context.
-     * It runs until its first suspension, then async() returns.
+     * It runs until its first suspension, then async() returns. Where no
+     * scheduler runs (an offload() job, a shutdown function of a script), $fn
+     * runs to its end before async() returns.
      */
     function async(callable $fn): Task
     {
@@ -819,6 +885,28 @@ namespace Cairo\Http {
         }
 
         /**
+         * Middleware::timeout() does not apply to the route declared just
+         * before this call: for an answer that lasts as long as its client
+         * stays, as Response::events() does, or a long download.
+         */
+        public function noTimeout(): static
+        {
+        }
+
+        /**
+         * The handler of the route declared just before this call reads
+         * the request's body in pieces, with Request::read(), while the
+         * client sends it: an upload that is larger than memory, or a client
+         * that goes on speaking while it is answered. body() is empty then,
+         * a form is not parsed, and neither the 32 MiB limit nor the
+         * server's read timeout applies: the handler says when it has
+         * read enough.
+         */
+        public function streamBody(): static
+        {
+        }
+
+        /**
          * Handle every request no other route or static path matches, with
          * any method: a Cairo handler, a PSR-15 RequestHandlerInterface, a
          * Symfony HttpKernelInterface or a Laravel HTTP Kernel (see
@@ -845,12 +933,133 @@ namespace Cairo\Http {
         {
         }
 
+        /**
+         * Serve the PHP scripts under $dir as a web server in front of
+         * PHP-FPM does, for apps that are a set of scripts (WordPress):
+         * /a/b.php runs b.php, /x.php/more runs x.php with PATH_INFO /more,
+         * a directory runs its index.php, and a path that names nothing runs
+         * $front, the front controller ($dir/index.php by default). The other files under $dir
+         * are served by Go, as publicDir() serves them; the source of a
+         * script never is, nor hidden files. Needs
+         * App::concurrency('classic'): each request has a PHP request of its
+         * own. The script sees the superglobals, php://input, echo and
+         * header() as under PHP-FPM.
+         */
+        public function scripts(string $dir, string $front = 'index.php'): static
+        {
+        }
+
+        /** @internal Every route of this server runs the script Go names (scripts()). */
+        public function scriptsOnly(): bool
+        {
+        }
+
+        /**
+         * Let an answer name a file under $dir, which Go then sends in its
+         * place: Response::file(), or the header X-Sendfile with the file's
+         * path, as code written for Apache sets it. Symfony's and Laravel's
+         * file responses do after BinaryFileResponse::trustXSendfileTypeHeader().
+         * With $prefix, the header X-Accel-Redirect and a URL path under it
+         * name the file too, as code written for nginx has it. Go sends
+         * the file with ranges and If-Modified-Since while the PHP thread
+         * goes on; a path cannot leave $dir, symlinks included.
+         */
+        public function sendfile(string $dir, string $prefix = ''): static
+        {
+        }
+
         /** Add Go-side middleware; see Cairo\Middleware. */
         public function use(\Cairo\Middleware $middleware): static
         {
         }
 
+        /**
+         * Serve the process's metrics at $path in Prometheus' text format,
+         * and collect them: every HTTP request by method, route and status
+         * with how long it took (cairo_http_request_duration_seconds), the
+         * gRPC calls served (cairo_grpc_call_duration_seconds), the PHP
+         * threads (cairo_php_*), the Go runtime and the process. Go answers;
+         * no PHP runs. Without this call nothing is measured.
+         *
+         * The numbers describe the whole process, so declare the endpoint
+         * on a server that only your monitoring reaches:
+         *
+         *     $app->http('127.0.0.1:9100')->metrics()->health();
+         */
+        public function metrics(string $path = '/metrics'): static
+        {
+        }
+
+        /**
+         * Serve a Mercure hub at /.well-known/mercure and return its
+         * settings: see Mercure. A process has one hub.
+         */
+        public function mercure(): Mercure
+        {
+        }
+
+        /**
+         * Answer health probes without PHP. GET $live is 200 for as long as
+         * the process serves: a liveness probe. GET $ready is 200 once the
+         * PHP threads take requests and 503 from the moment the process is
+         * told to stop: a readiness probe. `cairo serve --drain 5s` keeps
+         * serving for that long after the signal, so a load balancer sees
+         * the 503 and stops sending before connections close.
+         */
+        public function health(string $live = '/healthz', string $ready = '/readyz'): static
+        {
+        }
+
         public function timeouts(float $read = 0, float $write = 0): static
+        {
+        }
+
+        /**
+         * Serve HTTPS with the certificate in $certFile (PEM: the
+         * certificate, then its chain) and the private key in $keyFile.
+         * Clients that ask for HTTP/2 get it. The files are read again when
+         * they change, so a renewed certificate needs no restart.
+         */
+        public function tls(string $certFile, string $keyFile): static
+        {
+        }
+
+        /**
+         * Serve HTTPS with certificates that Let's Encrypt issues and renews
+         * for $domains. Calling this accepts the terms of service of the
+         * certificate authority.
+         *
+         * The authority checks each domain by connecting to it, so the
+         * domains must point to this server and it must listen on port 443,
+         * or have redirectHttp() on port 80. The first request for a domain
+         * waits for its certificate. $cacheDir keeps the account key and the
+         * certificates between restarts: it must survive them, and nobody
+         * else should be able to read it. $email is where the authority
+         * writes about problems with a certificate. $directory is the ACME
+         * directory of another authority, or of Let's Encrypt's staging
+         * service while you try things out.
+         *
+         * @param list<string> $domains host names, without wildcards
+         */
+        public function autoTls(array $domains, string $cacheDir, string $email = '', string $directory = ''): static
+        {
+        }
+
+        /**
+         * Also accept HTTP/2 without TLS, from clients that start with it
+         * (a load balancer or a proxy set to do so). HTTP/1.1 stays. Not
+         * for a server with tls() or autoTls(), which has HTTP/2 already.
+         */
+        public function h2c(): static
+        {
+        }
+
+        /**
+         * Also listen on $listen without TLS and send every request there
+         * to the same address on this server (308). For a server with tls()
+         * or autoTls().
+         */
+        public function redirectHttp(string $listen = ':80'): static
         {
         }
 
@@ -891,7 +1100,48 @@ namespace Cairo\Http {
         {
         }
 
+        /** The request's protocol: "HTTP/1.1" or "HTTP/2.0". */
+        public function protocol(): string
+        {
+        }
+
+        /**
+         * Whether the request came to Cairo over TLS. Behind a proxy that
+         * ends TLS itself this is false: read the header the proxy sets.
+         */
+        public function secure(): bool
+        {
+        }
+
         public function body(): string
+        {
+        }
+
+        /**
+         * The next piece of the body, of $max bytes at most (1 MiB at most),
+         * on a route with streamBody(); null once the client has sent
+         * it all. Waits, its fiber only, for the client to send.
+         *
+         *     while (($piece = $req->read()) !== null) {
+         *         fwrite($file, $piece);
+         *     }
+         *
+         * @throws \Cairo\Context\Canceled the client has gone
+         * @throws \RuntimeException the body cannot be read: its route has no streamBody()
+         */
+        public function read(int $max = 65536): ?string
+        {
+        }
+
+        /**
+         * Sends 103 Early Hints ahead of the response, so that the browser
+         * can start on what the page needs while the handler makes it:
+         *
+         *     $req->earlyHints(['Link' => '</app.css>; rel=preload; as=style']);
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public function earlyHints(array $headers): void
         {
         }
 
@@ -951,7 +1201,9 @@ namespace Cairo\Http {
         {
         }
     }
+}
 
+namespace Cairo\Http {
     final class Response
     {
         /** @param array<string, string|list<string>> $headers */
@@ -960,6 +1212,125 @@ namespace Cairo\Http {
             public readonly array $headers = [],
             public readonly string $body = '',
         )
+        {
+        }
+
+        /**
+         * An answer whose body is sent while $writer runs: the client has
+         * the status and the headers first, then every Stream::write() as it
+         * is made, and the answer ends when $writer returns.
+         *
+         *     Response::stream(function (Stream $out) {
+         *         foreach (rows() as $row) {
+         *             $out->write(json_encode($row) . "\n");
+         *         }
+         *     }, headers: ['Content-Type' => 'application/x-ndjson']);
+         *
+         * $writer runs in the request's fiber and may wait like any handler.
+         * When the client leaves, its next wait or write() throws
+         * Cairo\Context\Canceled. A route with cache() cannot stream.
+         *
+         * @param callable(Stream): void $writer
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function stream(callable $writer, int $status = 200, array $headers = []): self
+        {
+        }
+
+        /**
+         * An answer that is the file at $path, which Go sends in place of
+         * a body: with ranges and If-Modified-Since, and without holding
+         * a PHP thread. The file must be under a directory given to
+         * $http->sendfile(). The content type is the file name's, unless
+         * $headers has one.
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function file(string $path, array $headers = []): self
+        {
+        }
+
+        /**
+         * A Server-Sent Events answer: $source sends events for as long as
+         * it runs, and a browser reads them with EventSource.
+         *
+         *     Response::events(function (Events $events) use ($ctx) {
+         *         while (true) {
+         *             $events->send(json_encode(next_price()), event: 'price');
+         *             \Cairo\sleep(1);
+         *         }
+         *     });
+         *
+         * Give the route noTimeout() when the server has a timeout.
+         *
+         * @param callable(Events): void $source
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function events(callable $source, array $headers = []): self
+        {
+        }
+
+        /**
+         * A Server-Sent Events answer that Go serves: the client gets what
+         * is published to $topics (Topic::publish()) for as long as it
+         * stays, and no PHP runs for it. The handler decides who may listen
+         * to what, returns this, and its fiber ends.
+         *
+         *     $http->get('/news', fn (Request $req): Response =>
+         *         Response::eventsFrom(['news', 'user.' . userOf($req)]));
+         *
+         * Go sends a comment every $keepAlive seconds, so that no proxy
+         * closes a quiet connection (0 for none). Nothing is kept for a
+         * client that connects again: it hears what is published from then.
+         *
+         * @param string|list<string> $topics 64 at most
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function eventsFrom(string|array $topics, array $headers = [], float $keepAlive = 15.0): self
+        {
+        }
+
+        /**
+         * A WebSocket: the connection becomes one, and $handler runs with
+         * it in the request's fiber until it returns, which closes the
+         * socket.
+         *
+         *     $http->get('/chat', fn (Request $req): Response => Response::websocket(function (WebSocket $ws): void {
+         *         $ws->subscribe('room');
+         *         while (($message = $ws->receive()) !== null) {
+         *             Topic::publish('room', $message->data);
+         *         }
+         *     }));
+         *
+         * The handler of the route runs first, as for any request: it may
+         * answer with another Response instead (a 401, say), and only this
+         * one makes the handshake. A page of another site may not connect:
+         * the browser's Origin must be the request's own host, or match one
+         * of $origins (a host, with * for any run of characters:
+         * 'app.example.com', '*.example.com'). $protocols are the
+         * subprotocols the client may choose from, in your order of
+         * preference. A message of the client over $maxMessage bytes closes
+         * the socket. Go pings the client every $ping seconds and drops one
+         * that does not answer (0 for no pings).
+         *
+         * Give the route noTimeout() when the server has a timeout.
+         *
+         * @param callable(WebSocket): void $handler
+         * @param list<string> $origins
+         * @param list<string> $protocols
+         */
+        public static function websocket(
+            callable $handler,
+            array $origins = [],
+            array $protocols = [],
+            int $maxMessage = 65536,
+            float $ping = 30.0,
+        ): self
+        {
+        }
+
+        /** @internal what answers in place of a body */
+        public function writer(): ?\Closure
         {
         }
 
@@ -972,6 +1343,194 @@ namespace Cairo\Http {
         }
 
         public static function json(mixed $data, int $status = 200): self
+        {
+        }
+    }
+}
+
+namespace Cairo\Http {
+    use Cairo\Context;
+
+    /**
+     * The body of an answer that is sent while its handler runs
+     * (Response::stream()). The status and the headers are with the client
+     * before the first write().
+     */
+    final class Stream
+    {
+        /** @internal */
+        public function __construct(private readonly int $id)
+        {
+        }
+
+        /**
+         * @internal Begins the answer of the running request.
+         *
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function open(int $status, array $headers): self
+        {
+        }
+
+        /**
+         * Sends $bytes. It returns at once while Go has room for them, and
+         * waits, its fiber only, behind a client that reads slowly. Pieces
+         * written together leave together.
+         *
+         * @throws Context\Canceled the client has gone
+         */
+        public function write(string $bytes): void
+        {
+        }
+    }
+
+    /**
+     * The events of a Server-Sent Events answer (Response::events()), which a
+     * browser reads with EventSource.
+     */
+    final class Events
+    {
+        /** @internal */
+        public function __construct(private readonly Stream $out)
+        {
+        }
+
+        /**
+         * Sends one event. $event names it for addEventListener(); without
+         * a name it is a "message". The browser sends the last $id it saw
+         * as the Last-Event-ID header when it connects again.
+         *
+         * @throws Context\Canceled the client has gone
+         */
+        public function send(string $data, ?string $event = null, ?string $id = null): void
+        {
+        }
+
+        /** A line that the browser ignores: what keeps a proxy from closing a quiet stream. */
+        public function comment(string $text = ''): void
+        {
+        }
+
+        /** Tells the browser how long to wait before it connects again. */
+        public function retry(int $milliseconds): void
+        {
+        }
+    }
+}
+
+namespace Cairo\Http {
+    use Cairo\Context;
+
+    /** One message of a WebSocket. */
+    final class Message
+    {
+        public function __construct(
+            public readonly string $data,
+            public readonly bool $binary = false,
+        )
+        {
+        }
+    }
+
+    /**
+     * A WebSocket, in the fiber of the request that asked for it
+     * (Response::websocket()). The socket ends when its handler returns.
+     *
+     * A client that leaves does not cut its handler off: receive() still
+     * returns what the client had sent, then null, and send() throws.
+     */
+    final class WebSocket
+    {
+        /**
+         * @internal Makes the running request's connection a WebSocket and
+         * runs $handler with it. A handshake that fails is answered by Go,
+         * and $handler does not run.
+         *
+         * @param callable(self): void $handler
+         * @param array{origins: list<string>, protocols: list<string>, max_message: int, ping: float} $options
+         */
+        public static function serve(callable $handler, array $options): void
+        {
+        }
+
+        /**
+         * The next message of the client. It waits, its fiber only, until
+         * one arrives, and returns null once the client has closed or gone
+         * and all that it sent has been received.
+         *
+         * @throws Context\Canceled the request was ended, by a timeout or a server that stops
+         */
+        public function receive(): ?Message
+        {
+        }
+
+        /**
+         * Sends a message: text, which must be UTF-8, or binary. It returns
+         * at once while Go has room for it, and waits, its fiber only,
+         * behind a client that reads slowly.
+         *
+         * @throws Context\Canceled the client has gone
+         */
+        public function send(string $data, bool $binary = false): void
+        {
+        }
+
+        /**
+         * Closes the socket with a status of your choosing, once what was
+         * sent is with the client. A handler that just returns closes it
+         * with 1000; statuses 3000 to 4999 are an app's own. receive()
+         * returns what the client had still sent, then null.
+         */
+        public function close(int $code = 1000, string $reason = ''): void
+        {
+        }
+
+        /**
+         * The client gets what is published to these topics
+         * (Topic::publish()) as text messages, sent by Go: this fiber does
+         * not run for them.
+         */
+        public function subscribe(string ...$topics): void
+        {
+        }
+
+        /** Ends that for these topics. A socket that ends leaves all of its topics. */
+        public function unsubscribe(string ...$topics): void
+        {
+        }
+    }
+
+    /**
+     * Topics: a message is published once and Go sends it to every client
+     * that listens, the WebSockets that subscribed (WebSocket::subscribe())
+     * and the Server-Sent Events answers of Response::eventsFrom(). The
+     * topics are this server process's, and nothing is kept: a client
+     * hears what is published while it listens.
+     */
+    final class Topic
+    {
+        /**
+         * Publishes $data to $topic and returns how many clients listen to
+         * it. It does not wait for them, and may be called from anywhere:
+         * a handler, a task, defer(). A WebSocket gets $data as a text
+         * message; a Server-Sent Events client gets an event with it,
+         * named $event when given, and with $id.
+         *
+         * A client that reads more slowly than its topics are published to
+         * is dropped once 64 messages wait for it, and connects again.
+         */
+        public static function publish(string $topic, string $data, ?string $event = null, ?string $id = null): int
+        {
+        }
+
+        /**
+         * @internal Makes the running request's answer the events of
+         * $topics, which Go serves once this fiber has ended.
+         *
+         * @param list<string> $topics
+         * @param array<string, string|list<string>> $headers
+         */
+        public static function listen(array $topics, array $headers, float $keepAlive): void
         {
         }
     }
@@ -1009,7 +1568,11 @@ namespace Cairo\Http {
         {
         }
 
-        /** The PSR-17 factory of nyholm/psr7 or guzzlehttp/psr7. */
+        /**
+         * The PSR-17 factories of the PSR-7 implementation that is installed:
+         * nyholm/psr7, guzzlehttp/psr7, php-http/discovery's, laminas-diactoros
+         * (Mezzio) or slim/psr7.
+         */
         public static function psr17(): object
         {
         }
@@ -1019,7 +1582,10 @@ namespace Cairo\Http {
         {
         }
 
-        /** A Cairo Response from a PSR-7 ResponseInterface. */
+        /**
+         * A Cairo Response from a PSR-7 ResponseInterface. A body of unknown
+         * size, or a large one, is sent in pieces as it is read.
+         */
         public static function fromPsr7(object $response): Response
         {
         }
@@ -1029,10 +1595,199 @@ namespace Cairo\Http {
         {
         }
 
-        /** A Cairo Response from a Symfony (or Laravel) Response, streamed ones included. */
+        /**
+         * A Cairo Response from a Symfony (or Laravel) Response. A streamed
+         * response, and a file that no X-Sendfile header leaves to the
+         * server, is sent right here, while its callback writes it: the
+         * Response that comes back then only stands for it.
+         */
         public static function fromSymfony(object $response, ?object $request = null): Response
         {
         }
+    }
+}
+
+namespace Cairo\Http {
+    /**
+     * The Mercure hub of an HTTP server, at /.well-known/mercure: browsers
+     * subscribe to topics with an EventSource, and what is published to a
+     * topic goes to all of its subscribers. PHP publishes with
+     * mercure_publish(); other programs publish with a POST and a token.
+     * Go serves every subscriber: no PHP thread and no fiber is held.
+     *
+     *     $http->mercure()
+     *         ->issuer('https://example.com', publisher: $key, subscriber: $key)
+     *         ->anonymous();
+     *
+     * The hub is the Mercure.rocks hub (github.com/dunglas/mercure), which
+     * is licensed under the AGPL-3.0, not under Cairo's Apache-2.0. A cairo
+     * built with the tag `nomercure` has none, and refuses this declaration.
+     */
+    final class Mercure
+    {
+        /**
+         * Trust the tokens of one issuer: $identifier is their `iss` claim.
+         * $publisher verifies the token of a program that publishes with a
+         * POST, $subscriber the token of a client that subscribes to
+         * private updates; leave one empty and the hub takes no token of
+         * that role. A key is a secret for the HS algorithms, or a public
+         * key in PEM for the others (RS256, ES256, EdDSA and their kin).
+         * Read keys from the environment, never from the code.
+         *
+         * With no publisher key at all, only mercure_publish() publishes.
+         */
+        public function issuer(string $identifier, string $publisher = '', string $subscriber = '', string $algorithm = 'HS256'): static
+        {
+        }
+
+        /** Let clients without a token subscribe. They get the updates that are not private. */
+        public function anonymous(): static
+        {
+        }
+
+        /**
+         * The sites whose pages may subscribe from a browser (CORS), as
+         * origins: 'https://app.example.com', or '*' for any. Pages of the
+         * hub's own origin need none.
+         *
+         * @param list<string> $origins
+         */
+        public function cors(array $origins): static
+        {
+        }
+
+        /**
+         * The sites whose pages may publish with the token cookie. A program
+         * that sends its token in the Authorization header needs none.
+         *
+         * @param list<string> $origins
+         */
+        public function publishOrigins(array $origins): static
+        {
+        }
+
+        /**
+         * Keep the updates in $file, so that a client which comes back with
+         * its last event id gets what it missed, also after a restart.
+         * $size is how many updates are kept, 0 for all of them. Without
+         * this call nothing is kept: a client gets what is published while
+         * it listens.
+         */
+        public function history(string $file, int $size = 0): static
+        {
+        }
+
+        /** Turn on the subscription API and the events that tell who subscribes to what. */
+        public function subscriptions(): static
+        {
+        }
+
+        /**
+         * Also take the clients and tokens of the protocol before Mercure
+         * 1.0 (`?topic=`, the `mercure` claim), for the time it takes to
+         * move them: $version is 8, or 7 for the oldest. It relaxes how
+         * tokens are checked, so turn it off again when the clients moved.
+         */
+        public function compatibility(int $version = 8): static
+        {
+        }
+
+        /**
+         * The audience (`aud`) that tokens must name, as an absolute URL.
+         * Without it, it is the hub's URL as the client asked for it,
+         * which is not the public one behind a proxy that ends TLS: say it
+         * there ('https://example.com/.well-known/mercure').
+         */
+        public function resource(string $identifier): static
+        {
+        }
+
+        /**
+         * Answer only for these public URLs of the server (scheme and
+         * host); a request for another host gets 421.
+         *
+         * @param list<string> $urls
+         */
+        public function publicUrls(array $urls): static
+        {
+        }
+
+        /**
+         * Seconds. $heartbeat: a comment goes to a quiet subscriber that
+         * often, so that no proxy closes its connection. $write: a
+         * subscriber is closed after that long, and connects again.
+         * $dispatch: how long one update may take to reach a subscriber
+         * before the subscriber is dropped. 0 turns the first two off.
+         */
+        public function timeouts(float $heartbeat = 40.0, float $write = 600.0, float $dispatch = 5.0): static
+        {
+        }
+
+        /**
+         * How many subscriptions may be open at once: in all, with one
+         * token, and from one client address. 0 is no limit.
+         */
+        public function limits(int $total = 0, int $perToken = 0, int $perClient = 0): static
+        {
+        }
+
+        /**
+         * The name of the cookie a browser sends its token in. The default,
+         * `__Secure-mercure_access_token`, only travels over HTTPS: give a
+         * name without that prefix for development over plain HTTP.
+         */
+        public function cookie(string $name): static
+        {
+        }
+
+        /** Serve the hub's debugging page at /.well-known/mercure/debug/. Not for production. */
+        public function debugger(): static
+        {
+        }
+
+        /**
+         * @internal
+         * @return array<string, mixed>
+         */
+        public function spec(): array
+        {
+        }
+    }
+}
+
+namespace {
+    /**
+     * Publish an update to the Mercure hub of this process ($http->mercure()),
+     * without HTTP and without a token. Only the calling fiber waits, for as
+     * long as the hub takes to hand the update to its subscribers' queues; it
+     * does not wait for the clients.
+     *
+     *     $id = mercure_publish('https://example.com/books/1', json_encode($book));
+     *
+     * @param string|list<string> $topics the topic, or the topic and its
+     *        alternates: a subscriber to any of them gets the update
+     * @param bool $private only for subscribers whose token names a topic of it
+     * @param ?string $id the update's id; the hub makes one when null
+     * @param ?string $type the event's name, for addEventListener()
+     * @param ?int $retry milliseconds a client waits before it connects again
+     * @return string the update's id, which a client sends as its last event id
+     *         to get what came after it
+     * @throws \ValueError for an update the protocol does not allow: a topic
+     *         below /.well-known/mercure or "*", an id that starts with "#" or
+     *         is "earliest", the type "mercure", data that is not UTF-8, a
+     *         negative $retry
+     * @throws \RuntimeException when no hub runs in this process (in a script
+     *         of `cairo php`, for one), or the hub could not hand the update out
+     */
+    function mercure_publish(
+        string|array $topics,
+        string $data = '',
+        bool $private = false,
+        ?string $id = null,
+        ?string $type = null,
+        ?int $retry = null,
+    ): string
+    {
     }
 }
 
@@ -1067,6 +1822,15 @@ namespace Cairo\Grpc {
 
         /** Upper bound in seconds for any call, applied when the client sets a later or no deadline. */
         public function maxDuration(float $seconds): static
+        {
+        }
+
+        /**
+         * Serve gRPC over TLS with the certificate in $certFile (PEM: the
+         * certificate, then its chain) and the private key in $keyFile. The
+         * files are read again when they change.
+         */
+        public function tls(string $certFile, string $keyFile): static
         {
         }
 
