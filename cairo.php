@@ -114,10 +114,10 @@ namespace Cairo {
          * Log every request that takes longer than $seconds, with where its
          * time went, measured in Go with no code in the app:
          *
-         *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 sql="38 in 310ms" http="2 in 890ms"
+         *     slow request route="GET /orders/{id}" ms=1240 php_ms=40 longest_run_ms=12 socket="38 in 310ms" http="2 in 890ms"
          *
-         * Kinds: sql (PDO pgsql), http (curl),
-         * socket (other hooked sockets: PDO MySQL, Redis, streams), connect
+         * Kinds: http (curl),
+         * socket (hooked sockets: PDO pgsql and MySQL, Redis, streams), connect
          * (DNS, connect, TLS), sleep, wait (channels, select(), Cairo\Pool
          * with acquireTimeout), offload and grpc. Waits of async() tasks run side by side, so the kinds can
          * add up to more than the request. php_ms is the time when none of
@@ -769,7 +769,7 @@ namespace Cairo {
         public const CONNECT = 4;
         /** gethostbyname(), gethostbynamel(), through Go's resolver */
         public const DNS = 8;
-        /** PDO pgsql: Cairo's Go-backed driver runs each query as a Go operation of the fiber */
+        /** PDO pgsql: libpq's waits for the server (queries, connects, COPY, large objects, getNotify()) suspend the fiber */
         public const PGSQL = 32;
         public const ALL = self::SLEEP | self::SOCKETS | self::CONNECT | self::DNS | self::CURL | self::PGSQL;
     }
